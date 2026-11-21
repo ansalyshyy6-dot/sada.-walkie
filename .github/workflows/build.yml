@@ -1,0 +1,73 @@
+name: Build APK from ZIP
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "::error::No .zip file found in the repository root"
+            exit 1
+          fi
+          mkdir -p work
+          unzip -q -o "${zips[0]}" -d work
+          settings=$(find work -not -path '*__MACOSX*' \( -name settings.gradle.kts -o -name settings.gradle \) | head -n1)
+          if [ -z "$settings" ]; then
+            echo "::error::No Android project (settings.gradle.kts) inside the zip"
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$settings")" >> "$GITHUB_ENV"
+
+      - name: Patch Radio.kt
+        run: |
+          f=$(find "$PROJECT_DIR" -name Radio.kt | head -n1)
+          sed -i 's/mix\[i\] += f\[i\]/mix[i] = mix[i] + f[i].toInt()/' "$f"
+          grep -n 'mix\[i\] = mix\[i\]' "$f"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-disabled: true
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle :app:assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sada-Walkie-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish release (direct APK download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" Sada-Walkie.apk
+          gh release create "build-${{ github.run_number }}" Sada-Walkie.apk \
+            --target "${{ github.sha }}" \
+            --title "Sada Walkie - build ${{ github.run_number }}" \
+            --notes "Download Sada-Walkie.apk below and install it on your phone."
